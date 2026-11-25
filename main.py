@@ -13,6 +13,7 @@ file it created.
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # One original fortune-cookie line for a developer. The twist: the bug
@@ -29,14 +30,29 @@ def entry_path() -> Path:
 
 
 def write_entry(path: Path) -> None:
-    """Write the line with no trailing newline and make it world-readable."""
+    """Write the line atomically, with no trailing newline, mode 0644.
+
+    The line goes to a temp file in the same directory first, then
+    os.replace moves it into place, so a crash can never leave a
+    half-written entry behind. The temp file is chmodded 0644 before
+    the move (tempfile-made files start 0600 whatever the umask).
+    Only the FILE is chmodded -- never the /output directory.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" keeps us in full control of the bytes written.
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        handle.write(LINE)
-    # The file must be readable by the grader (uid 65534). chmod the
-    # FILE only -- never the /output directory.
-    os.chmod(path, 0o644)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".entry-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(LINE)
+        # The file must be readable by the grader (uid 65534). chmod the
+        # FILE only -- never the /output directory.
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def verify(path: Path) -> None:
@@ -54,6 +70,7 @@ def main() -> int:
     os.umask(0o022)
     assert len(LINE) <= MAX_CHARS, f"entry is {len(LINE)} chars, over {MAX_CHARS}"
     assert "\n" not in LINE and "\r" not in LINE, "entry must be one line"
+    assert LINE == LINE.strip(), "entry must have no leading/trailing whitespace"
     path = entry_path()
     write_entry(path)
     verify(path)
